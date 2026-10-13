@@ -8,6 +8,7 @@ public class GestorDeadlock {
     private int[][] maximo;     // Matriz Max
     private int[][] necesidad;  // Matriz Need (Max - Allocation)
     private int[] disponibles;  // Vector Available
+    private boolean[] ultimoFinalizado; // Resultado de la última evaluación
 
     public GestorDeadlock(int numProcesos, int numRecursos, int[][] asignacion, int[][] maximo, int[] disponibles) {
         this.numProcesos = numProcesos;
@@ -33,6 +34,7 @@ public class GestorDeadlock {
     public boolean evaluarEstadoSeguro() {
         int[] trabajo = disponibles.clone(); // Vector Work
         boolean[] finalizado = new boolean[numProcesos]; // Vector Finish
+        ultimoFinalizado = finalizado;
         int[] secuenciaSegura = new int[numProcesos];
         int contador = 0;
 
@@ -91,6 +93,17 @@ public class GestorDeadlock {
             }
         }
         System.out.println();
+    }
+
+    // true en la posición i si el proceso i quedó bloqueado en la última evaluación
+    public boolean[] getProcesosBloqueados() {
+        boolean[] r = new boolean[numProcesos];
+        if (ultimoFinalizado != null) {
+            for (int i = 0; i < numProcesos; i++) {
+                r[i] = !ultimoFinalizado[i];
+            }
+        }
+        return r;
     }
 
     public void mostrarMatrices() {

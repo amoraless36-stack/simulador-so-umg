@@ -1,5 +1,10 @@
 import java.awt.*;
+import java.awt.geom.Line2D;
+import java.awt.geom.Path2D;
 import java.awt.geom.RoundRectangle2D;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -76,6 +81,15 @@ public class VentanaPrincipal extends JFrame {
     private final Set<String> asignados = new HashSet<>();
     private JTextArea txtAreaInterbloqueos;
     private JTextArea txtAreaConcurrencia;
+
+    private JTextField txtHilos, txtIncrementos;
+    private JLabel valSin, espSin, valCon, espCon;
+    private Insignia estSin, estCon;
+
+    private JComboBox<String> cbEscenario;
+    private JTable tablaAsignacion, tablaMaximo, tablaDisponibles;
+    private GrafoPanel grafoPanel;
+    private Insignia veredicto;
 
     private JTable tablaPCB;
     private DefaultTableModel modelPCB;
@@ -757,6 +771,199 @@ public class VentanaPrincipal extends JFrame {
         }
     }
 
+    // Etiqueta redondeada que cambia de color según el estado
+    private static class Insignia extends JLabel {
+        private static final long serialVersionUID = 1L;
+        private Color fondo = new Color(0x94A3B8);
+
+        Insignia(String texto) {
+            super(texto);
+            setFont(ui(Font.BOLD, 12));
+            setForeground(Color.WHITE);
+            setBorder(new EmptyBorder(6, 14, 6, 14));
+            setOpaque(false);
+        }
+
+        void estado(String texto, Color color) {
+            setText(texto);
+            fondo = color;
+            revalidate();
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            suavizar(g2);
+            g2.setColor(fondo);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), getHeight(), getHeight());
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    // Grafo de asignación de recursos: procesos (círculos) y recursos (cuadros)
+    private static class GrafoPanel extends JPanel {
+        private static final long serialVersionUID = 1L;
+        private static final BasicStroke SOLIDO = new BasicStroke(2f);
+        private static final BasicStroke PUNTEADO = new BasicStroke(2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, new float[]{6f, 4f}, 0f);
+
+        private transient int[][] asig = new int[0][0];
+        private transient int[][] need = new int[0][0];
+        private transient int[] disp = new int[0];
+        private transient boolean[] bloqueados;
+
+        GrafoPanel() {
+            setOpaque(false);
+        }
+
+        void setDatos(int[][] a, int[][] mx, int[] d, boolean[] bloq) {
+            int n = a.length;
+            int m = d.length;
+            asig = new int[n][m];
+            need = new int[n][m];
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < m; j++) {
+                    asig[i][j] = a[i][j];
+                    need[i][j] = mx[i][j] - a[i][j];
+                }
+            }
+            disp = d.clone();
+            bloqueados = bloq == null ? null : bloq.clone();
+            repaint();
+        }
+
+        private static void flecha(Graphics2D g2, double x1, double y1, double x2, double y2) {
+            g2.draw(new Line2D.Double(x1, y1, x2, y2));
+            double ang = Math.atan2(y2 - y1, x2 - x1);
+            double largo = 9;
+            Path2D.Double cabeza = new Path2D.Double();
+            cabeza.moveTo(x2, y2);
+            cabeza.lineTo(x2 - largo * Math.cos(ang - Math.PI / 7), y2 - largo * Math.sin(ang - Math.PI / 7));
+            cabeza.lineTo(x2 - largo * Math.cos(ang + Math.PI / 7), y2 - largo * Math.sin(ang + Math.PI / 7));
+            cabeza.closePath();
+            g2.fill(cabeza);
+        }
+
+        private static void numero(Graphics2D g2, int valor, double x, double y) {
+            g2.setFont(ui(Font.BOLD, 11));
+            String t = String.valueOf(valor);
+            FontMetrics fm = g2.getFontMetrics();
+            int w = fm.stringWidth(t) + 8;
+            g2.setColor(Color.WHITE);
+            g2.fillRoundRect((int) x - w / 2, (int) y - 8, w, 16, 8, 8);
+            g2.setColor(TEXTO);
+            g2.drawString(t, (int) x - fm.stringWidth(t) / 2, (int) y + 4);
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            suavizar(g2);
+            int w = getWidth();
+            int h = getHeight();
+            int n = asig.length;
+            int m = disp.length;
+
+            // Leyenda
+            g2.setFont(ui(Font.PLAIN, 12));
+            FontMetrics fm = g2.getFontMetrics();
+            g2.setStroke(SOLIDO);
+            g2.setColor(EXITO);
+            g2.drawLine(0, 10, 20, 10);
+            g2.setColor(TENUE);
+            String t1 = "Asignado";
+            g2.drawString(t1, 26, 15);
+            int x2 = 26 + fm.stringWidth(t1) + 16;
+            g2.setStroke(PUNTEADO);
+            g2.setColor(PELIGRO);
+            g2.drawLine(x2, 10, x2 + 20, 10);
+            g2.setColor(TENUE);
+            g2.drawString("Solicita (bloqueado)", x2 + 26, 15);
+            g2.setStroke(SOLIDO);
+            if (n == 0 || m == 0) {
+                g2.dispose();
+                return;
+            }
+
+            int top = 40;
+            int bottom = 8;
+            int xp = 54;
+            int xr = w - 60;
+            int rp = 15;
+            double[] yp = new double[n];
+            double[] yr = new double[m];
+            for (int i = 0; i < n; i++) yp[i] = top + (h - top - bottom) * (i + 0.5) / n;
+            for (int j = 0; j < m; j++) yr[j] = top + (h - top - bottom) * (j + 0.5) / m;
+
+            // Aristas de asignación
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < m; j++) {
+                    if (asig[i][j] > 0) {
+                        g2.setStroke(SOLIDO);
+                        g2.setColor(EXITO);
+                        flecha(g2, xr - 24, yr[j] - 4, xp + rp, yp[i] - 4);
+                        if (asig[i][j] > 1) {
+                            numero(g2, asig[i][j], xp + rp + (xr - 24 - xp - rp) * 0.3, yp[i] - 4 + (yr[j] - yp[i]) * 0.3);
+                        }
+                    }
+                }
+            }
+            // Solicitudes de los procesos bloqueados
+            if (bloqueados != null) {
+                for (int i = 0; i < n; i++) {
+                    if (!bloqueados[i]) continue;
+                    for (int j = 0; j < m; j++) {
+                        if (need[i][j] > 0) {
+                            g2.setStroke(PUNTEADO);
+                            g2.setColor(PELIGRO);
+                            flecha(g2, xp + rp, yp[i] + 4, xr - 24, yr[j] + 4);
+                            if (need[i][j] > 1) {
+                                numero(g2, need[i][j], xp + rp + (xr - 24 - xp - rp) * 0.7, yp[i] + 4 + (yr[j] - yp[i]) * 0.7);
+                            }
+                        }
+                    }
+                }
+            }
+            g2.setStroke(SOLIDO);
+
+            // Nodos de procesos
+            for (int i = 0; i < n; i++) {
+                boolean bloq = bloqueados != null && bloqueados[i];
+                g2.setColor(bloq ? new Color(0xFEE2E2) : new Color(0xEEF2FF));
+                g2.fillOval(xp - rp, (int) yp[i] - rp, rp * 2, rp * 2);
+                g2.setColor(bloq ? PELIGRO : ACENTO);
+                g2.drawOval(xp - rp, (int) yp[i] - rp, rp * 2, rp * 2);
+                g2.setFont(ui(Font.BOLD, 12));
+                fm = g2.getFontMetrics();
+                String nombre = "P" + i;
+                g2.setColor(TEXTO);
+                g2.drawString(nombre, xp - fm.stringWidth(nombre) / 2, (int) yp[i] + 4);
+            }
+            // Nodos de recursos
+            for (int j = 0; j < m; j++) {
+                int total = disp[j];
+                for (int i = 0; i < n; i++) total += asig[i][j];
+                g2.setColor(new Color(0xFFF7ED));
+                g2.fillRoundRect(xr - 24, (int) yr[j] - 17, 48, 34, 8, 8);
+                g2.setColor(new Color(0xF59E0B));
+                g2.drawRoundRect(xr - 24, (int) yr[j] - 17, 48, 34, 8, 8);
+                g2.setColor(TEXTO);
+                g2.setFont(ui(Font.BOLD, 12));
+                fm = g2.getFontMetrics();
+                String nombre = "R" + j;
+                g2.drawString(nombre, xr - fm.stringWidth(nombre) / 2, (int) yr[j] - 2);
+                g2.setFont(ui(Font.PLAIN, 10));
+                fm = g2.getFontMetrics();
+                String inst = "x" + total;
+                g2.setColor(TENUE);
+                g2.drawString(inst, xr - fm.stringWidth(inst) / 2, (int) yr[j] + 12);
+            }
+            g2.dispose();
+        }
+    }
+
     // Pastilla con un valor destacado
     private static class Pastilla extends JPanel {
         private static final long serialVersionUID = 1L;
@@ -1001,26 +1208,201 @@ public class VentanaPrincipal extends JFrame {
         return panel;
     }
 
-    private JPanel crearPanelInterbloqueos() {
-        BotonRedondo btn = boton("Ejecutar Banquero / Detección", ACENTO, true);
-        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        top.setOpaque(false);
-        top.add(btn);
+    // =====================================================================
+    // MÓDULO 3: INTERBLOQUEOS (usa GestorDeadlock)
+    // =====================================================================
+    private static final String[] ESCENARIOS = {
+        "Caso seguro (5 procesos, 3 recursos)",
+        "Interbloqueo (2 procesos, 2 recursos)",
+        "Interbloqueo circular (3 procesos, 3 recursos)"
+    };
 
+    private JPanel conTitulo(String titulo, JComponent c) {
+        JPanel p = new JPanel(new BorderLayout(0, 4));
+        p.setOpaque(false);
+        p.add(etiqueta(titulo), BorderLayout.NORTH);
+        p.add(c, BorderLayout.CENTER);
+        return p;
+    }
+
+    private JPanel crearPanelInterbloqueos() {
+        JPanel panel = moduloBase();
+
+        cbEscenario = combo(ESCENARIOS);
+        cbEscenario.setPreferredSize(new Dimension(360, 38));
+        BotonRedondo btnEvaluar = boton("Evaluar estado (Banquero)", ACENTO, true);
+
+        JPanel fila = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        fila.setOpaque(false);
+        fila.add(etiqueta("Escenario"));
+        fila.add(cbEscenario);
+        fila.add(btnEvaluar);
+
+        JPanel norte = new JPanel();
+        norte.setLayout(new BoxLayout(norte, BoxLayout.Y_AXIS));
+        norte.setOpaque(false);
+        JPanel enc = encabezado("Interbloqueos", "Algoritmo del banquero (evitación), grafo de recursos y condiciones de Coffman");
+        enc.setAlignmentX(Component.LEFT_ALIGNMENT);
+        Tarjeta cardCtrl = tarjeta(null, fila);
+        cardCtrl.setAlignmentX(Component.LEFT_ALIGNMENT);
+        norte.add(enc);
+        norte.add(Box.createVerticalStrut(10));
+        norte.add(cardCtrl);
+
+        tablaAsignacion = tabla(modelo(new String[]{"Proceso"}));
+        tablaMaximo = tabla(modelo(new String[]{"Proceso"}));
+        tablaDisponibles = tabla(modelo(new String[]{"R0"}));
+
+        JScrollPane scAsig = scroll(tablaAsignacion);
+        JScrollPane scMax = scroll(tablaMaximo);
+        JScrollPane scDisp = scroll(tablaDisponibles);
+        scDisp.setPreferredSize(new Dimension(100, 62));
+
+        JPanel dosTablas = new JPanel(new GridLayout(1, 2, 12, 0));
+        dosTablas.setOpaque(false);
+        dosTablas.add(conTitulo("Asignación (Allocation)", scAsig));
+        dosTablas.add(conTitulo("Máximo (Max)", scMax));
+
+        JPanel datos = new JPanel(new BorderLayout(0, 10));
+        datos.setOpaque(false);
+        datos.add(dosTablas, BorderLayout.CENTER);
+        datos.add(conTitulo("Disponibles (Available)", scDisp), BorderLayout.SOUTH);
+
+        grafoPanel = new GrafoPanel();
+
+        JPanel centro = new JPanel(new GridLayout(1, 2, 14, 0));
+        centro.setOpaque(false);
+        centro.add(tarjeta("Datos del sistema (editables)", datos));
+        centro.add(tarjeta("Grafo de asignación de recursos", grafoPanel));
+
+        veredicto = new Insignia("SIN EVALUAR");
         txtAreaInterbloqueos = areaSalida();
-        btn.addActionListener(e -> simularInterbloqueoVisually());
-        return moduloConSalida("Interbloqueos", "Análisis de estado seguro con el algoritmo del banquero", top, txtAreaInterbloqueos);
+        txtAreaInterbloqueos.setFont(mono(12));
+        JScrollPane scSalida = scroll(txtAreaInterbloqueos);
+        scSalida.setPreferredSize(new Dimension(100, 130));
+
+        JPanel filaVeredicto = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        filaVeredicto.setOpaque(false);
+        filaVeredicto.add(veredicto);
+
+        JPanel cuerpoSalida = new JPanel(new BorderLayout(0, 8));
+        cuerpoSalida.setOpaque(false);
+        cuerpoSalida.add(filaVeredicto, BorderLayout.NORTH);
+        cuerpoSalida.add(scSalida, BorderLayout.CENTER);
+
+        panel.add(norte, BorderLayout.NORTH);
+        panel.add(centro, BorderLayout.CENTER);
+        panel.add(tarjeta("Resultado del algoritmo", cuerpoSalida), BorderLayout.SOUTH);
+
+        cbEscenario.addActionListener(e -> cargarEscenario(cbEscenario.getSelectedIndex()));
+        btnEvaluar.addActionListener(e -> evaluarInterbloqueo());
+
+        cargarEscenario(0);
+        return panel;
+    }
+
+    // =====================================================================
+    // MÓDULO 4: CONCURRENCIA (usa MonitorConcurrencia)
+    // =====================================================================
+    private JPanel tarjetaEscenario(String titulo, String subtitulo, JLabel valor, JLabel esperado, Insignia estado) {
+        JPanel cuerpo = new JPanel();
+        cuerpo.setLayout(new BoxLayout(cuerpo, BoxLayout.Y_AXIS));
+        cuerpo.setOpaque(false);
+
+        JLabel sub = new JLabel(subtitulo);
+        sub.setFont(ui(Font.PLAIN, 12));
+        sub.setForeground(TENUE);
+        sub.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        valor.setFont(ui(Font.BOLD, 34));
+        valor.setForeground(TEXTO);
+        valor.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        esperado.setFont(ui(Font.PLAIN, 13));
+        esperado.setForeground(TENUE);
+        esperado.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JPanel filaEstado = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        filaEstado.setOpaque(false);
+        filaEstado.setAlignmentX(Component.LEFT_ALIGNMENT);
+        filaEstado.add(estado);
+
+        cuerpo.add(sub);
+        cuerpo.add(valor);
+        cuerpo.add(esperado);
+        cuerpo.add(Box.createVerticalStrut(8));
+        cuerpo.add(filaEstado);
+        return tarjeta(titulo, cuerpo);
     }
 
     private JPanel crearPanelConcurrencia() {
-        BotonRedondo btn = boton("Simular Productor-Consumidor (Semáforos)", ACENTO, true);
-        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        top.setOpaque(false);
-        top.add(btn);
+        JPanel panel = moduloBase();
+
+        txtHilos = campo("5", 4);
+        txtIncrementos = campo("20", 5);
+        BotonRedondo btnComparar = boton("Ejecutar comparación", ACENTO, true);
+        BotonRedondo btnBinario = boton("Semáforo binario", ACENTO, false);
+        BotonRedondo btnContador = boton("Semáforo contador", ACENTO, false);
+
+        JPanel fila1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        fila1.setOpaque(false);
+        fila1.add(etiqueta("Hilos"));
+        fila1.add(txtHilos);
+        fila1.add(etiqueta("Incrementos por hilo"));
+        fila1.add(txtIncrementos);
+
+        JPanel fila2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        fila2.setOpaque(false);
+        fila2.add(btnComparar);
+        fila2.add(btnBinario);
+        fila2.add(btnContador);
+
+        JPanel config = new JPanel();
+        config.setLayout(new BoxLayout(config, BoxLayout.Y_AXIS));
+        config.setOpaque(false);
+        fila1.setAlignmentX(Component.LEFT_ALIGNMENT);
+        fila2.setAlignmentX(Component.LEFT_ALIGNMENT);
+        config.add(fila1);
+        config.add(fila2);
+
+        valSin = new JLabel("—");
+        espSin = new JLabel("Valor esperado: —");
+        estSin = new Insignia("PENDIENTE");
+        valCon = new JLabel("—");
+        espCon = new JLabel("Valor esperado: —");
+        estCon = new Insignia("PENDIENTE");
+
+        JPanel escenarios = new JPanel(new GridLayout(1, 2, 14, 0));
+        escenarios.setOpaque(false);
+        escenarios.add(tarjetaEscenario("Sin sincronización", "Acceso libre al contador compartido", valSin, espSin, estSin));
+        escenarios.add(tarjetaEscenario("Con sincronización (mutex)", "Sección crítica protegida con ReentrantLock", valCon, espCon, estCon));
+        escenarios.setPreferredSize(new Dimension(100, 215));
+        escenarios.setMaximumSize(new Dimension(Integer.MAX_VALUE, 215));
+
+        JPanel norte = new JPanel();
+        norte.setLayout(new BoxLayout(norte, BoxLayout.Y_AXIS));
+        norte.setOpaque(false);
+        JPanel enc = encabezado("Concurrencia", "Hilos, condición de carrera, mutex y semáforos");
+        enc.setAlignmentX(Component.LEFT_ALIGNMENT);
+        Tarjeta cardConfig = tarjeta("Configuración", config);
+        cardConfig.setAlignmentX(Component.LEFT_ALIGNMENT);
+        escenarios.setAlignmentX(Component.LEFT_ALIGNMENT);
+        norte.add(enc);
+        norte.add(Box.createVerticalStrut(10));
+        norte.add(cardConfig);
+        norte.add(Box.createVerticalStrut(12));
+        norte.add(escenarios);
 
         txtAreaConcurrencia = areaSalida();
-        btn.addActionListener(e -> simularConcurrenciaVisually());
-        return moduloConSalida("Concurrencia", "Hilos, sección crítica y semáforos", top, txtAreaConcurrencia);
+        txtAreaConcurrencia.setFont(mono(12));
+
+        panel.add(norte, BorderLayout.NORTH);
+        panel.add(tarjeta("Salida de la simulación", scroll(txtAreaConcurrencia)), BorderLayout.CENTER);
+
+        btnComparar.addActionListener(e -> ejecutarComparacion());
+        btnBinario.addActionListener(e -> ejecutarSemaforoBinario());
+        btnContador.addActionListener(e -> ejecutarSemaforoContador());
+        return panel;
     }
 
     private JPanel crearPanelPCB() {
@@ -1265,34 +1647,256 @@ public class VentanaPrincipal extends JFrame {
         valMemLibre.setText(libres + " KB");
     }
 
-    private void simularInterbloqueoVisually() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("=== ANÁLISIS DE INTERBLOQUEOS (DEADLOCKS) ===\n\n");
-        sb.append("Evaluando matriz de asignación y solicitudes...\n");
-        if (listaProcesos.size() < 2) {
-            sb.append("Estado: Seguro (Insuficientes procesos para generar interbloqueo circular).\n");
-        } else {
-            sb.append("Ejecutando Algoritmo del Banquero...\n");
-            sb.append("-> Recursos Disponibles: R1=3, R2=2, R3=2\n");
-            sb.append("-> Resultado: El sistema se encuentra en un ESTADO SEGURO.\n");
-            sb.append("-> Secuencia Segura Encontrada: < ");
-            for (Proceso p : listaProcesos) {
-                sb.append(p.getPid()).append(" ");
-            }
-            sb.append(">\n");
+    // ---------------------------------------------------------------------
+    // Utilidad: captura lo que las clases de lógica imprimen con System.out
+    // ---------------------------------------------------------------------
+    private String capturarSalida(Runnable tarea) {
+        PrintStream original = System.out;
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (PrintStream ps = new PrintStream(buffer, true, StandardCharsets.UTF_8)) {
+            System.setOut(ps);
+            tarea.run();
+        } finally {
+            System.setOut(original);
         }
-        txtAreaInterbloqueos.setText(sb.toString());
+        return buffer.toString(StandardCharsets.UTF_8);
     }
 
-    private void simularConcurrenciaVisually() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("=== APLICACIÓN DE CONCURRENCIA Y SEMÁFOROS ===\n\n");
-        sb.append("Inicializando Mutex = 1, Empty = 5, Full = 0...\n\n");
-        for (Proceso p : listaProcesos) {
-            sb.append(String.format("Hilo [%s] realiza wait(Empty) -> Entra a Sección Crítica -> signal(Full)\n", p.getPid()));
+    // ---------------------------------------------------------------------
+    // INTERBLOQUEOS
+    // ---------------------------------------------------------------------
+    private DefaultTableModel modeloMatriz(int[][] datos) {
+        int m = datos[0].length;
+        String[] cols = new String[m + 1];
+        cols[0] = "Proc.";
+        for (int j = 0; j < m; j++) cols[j + 1] = "R" + j;
+        DefaultTableModel mod = new DefaultTableModel(cols, 0) {
+            @Override public boolean isCellEditable(int fila, int col) { return col > 0; }
+        };
+        for (int i = 0; i < datos.length; i++) {
+            Object[] fila = new Object[m + 1];
+            fila[0] = "P" + i;
+            for (int j = 0; j < m; j++) fila[j + 1] = datos[i][j];
+            mod.addRow(fila);
         }
-        sb.append("\nSimulación finalizada sin exclusión mutua violada ni condiciones de carrera.");
-        txtAreaConcurrencia.setText(sb.toString());
+        return mod;
+    }
+
+    private DefaultTableModel modeloDisponibles(int[] d) {
+        String[] cols = new String[d.length];
+        Object[] fila = new Object[d.length];
+        for (int j = 0; j < d.length; j++) {
+            cols[j] = "R" + j;
+            fila[j] = d[j];
+        }
+        DefaultTableModel mod = new DefaultTableModel(cols, 0);
+        mod.addRow(fila);
+        return mod;
+    }
+
+    private void cargarEscenario(int idx) {
+        int[][] al;
+        int[][] mx;
+        int[] av;
+        if (idx == 0) {
+            al = new int[][]{{0, 1, 0}, {2, 0, 0}, {3, 0, 2}, {2, 1, 1}, {0, 0, 2}};
+            mx = new int[][]{{7, 5, 3}, {3, 2, 2}, {9, 0, 2}, {2, 2, 2}, {4, 3, 3}};
+            av = new int[]{3, 3, 2};
+        } else if (idx == 1) {
+            al = new int[][]{{1, 0}, {0, 1}};
+            mx = new int[][]{{1, 1}, {1, 1}};
+            av = new int[]{0, 0};
+        } else {
+            al = new int[][]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+            mx = new int[][]{{1, 1, 0}, {0, 1, 1}, {1, 0, 1}};
+            av = new int[]{0, 0, 0};
+        }
+        tablaAsignacion.setModel(modeloMatriz(al));
+        tablaMaximo.setModel(modeloMatriz(mx));
+        tablaDisponibles.setModel(modeloDisponibles(av));
+        tablaAsignacion.setRowHeight(26);
+        tablaMaximo.setRowHeight(26);
+        tablaDisponibles.setRowHeight(26);
+        grafoPanel.setDatos(al, mx, av, null);
+        veredicto.estado("SIN EVALUAR", new Color(0x94A3B8));
+        txtAreaInterbloqueos.setText("Escenario cargado. Puede editar las matrices y presionar \"Evaluar estado\".");
+    }
+
+    private int[][] leerMatriz(JTable t) {
+        if (t.isEditing()) {
+            t.getCellEditor().stopCellEditing();
+        }
+        DefaultTableModel mod = (DefaultTableModel) t.getModel();
+        int n = mod.getRowCount();
+        int m = mod.getColumnCount() - 1;
+        int[][] r = new int[n][m];
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < m; j++) {
+                r[i][j] = Integer.parseInt(String.valueOf(mod.getValueAt(i, j + 1)).trim());
+                if (r[i][j] < 0) throw new NumberFormatException("Valor negativo");
+            }
+        }
+        return r;
+    }
+
+    private int[] leerVector(JTable t) {
+        if (t.isEditing()) {
+            t.getCellEditor().stopCellEditing();
+        }
+        DefaultTableModel mod = (DefaultTableModel) t.getModel();
+        int m = mod.getColumnCount();
+        int[] r = new int[m];
+        for (int j = 0; j < m; j++) {
+            r[j] = Integer.parseInt(String.valueOf(mod.getValueAt(0, j)).trim());
+            if (r[j] < 0) throw new NumberFormatException("Valor negativo");
+        }
+        return r;
+    }
+
+    private void evaluarInterbloqueo() {
+        int[][] al;
+        int[][] mx;
+        int[] av;
+        try {
+            al = leerMatriz(tablaAsignacion);
+            mx = leerMatriz(tablaMaximo);
+            av = leerVector(tablaDisponibles);
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, "Todos los valores de las tablas deben ser números enteros mayores o iguales a 0.", "Error de Entrada", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        int n = al.length;
+        int m = av.length;
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < m; j++) {
+                if (mx[i][j] < al[i][j]) {
+                    JOptionPane.showMessageDialog(this, "El máximo de P" + i + " en R" + j + " no puede ser menor que lo que ya tiene asignado.", "Error de Entrada", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+            }
+        }
+
+        GestorDeadlock gestor = new GestorDeadlock(n, m, al, mx, av);
+        boolean[] seguro = new boolean[1];
+        String salida = capturarSalida(() -> {
+            gestor.mostrarMatrices();
+            seguro[0] = gestor.evaluarEstadoSeguro();
+        });
+        boolean[] bloqueados = gestor.getProcesosBloqueados();
+
+        StringBuilder nombres = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            if (bloqueados[i]) {
+                if (nombres.length() > 0) nombres.append(", ");
+                nombres.append("P").append(i);
+            }
+        }
+        boolean retencion = false;
+        for (int i = 0; i < n; i++) {
+            int tiene = 0;
+            int necesita = 0;
+            for (int j = 0; j < m; j++) {
+                tiene += al[i][j];
+                necesita += mx[i][j] - al[i][j];
+            }
+            if (tiene > 0 && necesita > 0) retencion = true;
+        }
+
+        StringBuilder sb = new StringBuilder(salida.trim());
+        sb.append("\n\n--- CONDICIONES DE INTERBLOQUEO (COFFMAN) ---\n");
+        sb.append("1. Exclusión mutua    : Presente (cada recurso lo usa un solo proceso a la vez)\n");
+        sb.append("2. Retención y espera : ").append(retencion
+                ? "Presente (hay procesos que retienen recursos y piden más)\n"
+                : "No se presenta (ningún proceso retiene recursos mientras espera)\n");
+        sb.append("3. No apropiación     : Presente (los recursos no se quitan a la fuerza)\n");
+        sb.append("4. Espera circular    : ").append(seguro[0]
+                ? "No se detecta (existe una secuencia segura)\n"
+                : "Presente entre " + nombres + "\n");
+        sb.append(seguro[0]
+                ? "Conclusión: no hay interbloqueo, porque las cuatro condiciones no se cumplen a la vez.\n"
+                : "Conclusión: se cumplen las cuatro condiciones, por lo tanto hay interbloqueo.\n");
+        sb.append("\nEstrategia aplicada: EVITACIÓN con el algoritmo del banquero.\n");
+        if (!seguro[0]) {
+            String primero = nombres.toString().split(",")[0].trim();
+            sb.append("Recuperación posible: finalizar o expropiar recursos a ").append(primero).append(" y volver a evaluar.\n");
+        }
+
+        txtAreaInterbloqueos.setText(sb.toString());
+        txtAreaInterbloqueos.setCaretPosition(0);
+        if (seguro[0]) {
+            veredicto.estado("ESTADO SEGURO: sin interbloqueo", EXITO);
+        } else {
+            veredicto.estado("INTERBLOQUEO DETECTADO en " + nombres, PELIGRO);
+        }
+        grafoPanel.setDatos(al, mx, av, bloqueados);
+    }
+
+    // ---------------------------------------------------------------------
+    // CONCURRENCIA
+    // ---------------------------------------------------------------------
+    private int[] leerHilosEIncrementos() {
+        try {
+            int h = Integer.parseInt(txtHilos.getText().trim());
+            int i = Integer.parseInt(txtIncrementos.getText().trim());
+            if (h < 1 || h > 50 || i < 1 || i > 500) throw new NumberFormatException("Fuera de rango");
+            return new int[]{h, i};
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this, "Use entre 1 y 50 hilos y entre 1 y 500 incrementos por hilo.", "Error de Entrada", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
+    }
+
+    private void mostrarResultado(JLabel valor, JLabel esperado, Insignia estado, int obtenido, int esp, boolean sincronizado) {
+        valor.setText(String.valueOf(obtenido));
+        esperado.setText("Valor esperado: " + esp);
+        if (obtenido == esp) {
+            valor.setForeground(EXITO);
+            estado.estado(sincronizado ? "CONSISTENTE" : "SIN ERROR ESTA VEZ", EXITO);
+        } else {
+            valor.setForeground(PELIGRO);
+            estado.estado("CONDICIÓN DE CARRERA: se perdieron " + (esp - obtenido), PELIGRO);
+        }
+    }
+
+    private void ejecutarComparacion() {
+        int[] d = leerHilosEIncrementos();
+        if (d == null) {
+            return;
+        }
+        final int hilos = d[0];
+        final int incrementos = d[1];
+        final int esperado = hilos * incrementos;
+
+        MonitorConcurrencia sin = new MonitorConcurrencia();
+        String salidaSin = capturarSalida(() -> sin.ejecutarSinSincronizacion(hilos, incrementos));
+        int obtenidoSin = sin.getContadorCompartido();
+
+        MonitorConcurrencia con = new MonitorConcurrencia();
+        String salidaCon = capturarSalida(() -> con.ejecutarConSincronizacion(hilos, incrementos));
+        int obtenidoCon = con.getContadorCompartido();
+
+        mostrarResultado(valSin, espSin, estSin, obtenidoSin, esperado, false);
+        mostrarResultado(valCon, espCon, estCon, obtenidoCon, esperado, true);
+        txtAreaConcurrencia.setText(salidaSin.trim() + "\n\n" + salidaCon.trim());
+        txtAreaConcurrencia.setCaretPosition(0);
+    }
+
+    private void ejecutarSemaforoBinario() {
+        int[] d = leerHilosEIncrementos();
+        if (d == null) {
+            return;
+        }
+        final int hilos = d[0];
+        final int incrementos = d[1];
+        String salida = capturarSalida(() -> new MonitorConcurrencia().ejecutarConSemaforoBinario(hilos, incrementos));
+        txtAreaConcurrencia.setText(salida.trim());
+        txtAreaConcurrencia.setCaretPosition(0);
+    }
+
+    private void ejecutarSemaforoContador() {
+        String salida = capturarSalida(() -> new MonitorConcurrencia().simularSemaforoContador());
+        txtAreaConcurrencia.setText(salida.trim());
+        txtAreaConcurrencia.setCaretPosition(0);
     }
 
     private void actualizarPCBVisually() {

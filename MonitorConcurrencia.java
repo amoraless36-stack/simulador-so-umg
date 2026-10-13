@@ -13,6 +13,10 @@ public class MonitorConcurrencia {
         this.semaforoContador = new Semaphore(3);  // S = n (Pool de 3 recursos)
     }
 
+    public int getContadorCompartido() {
+        return contadorCompartido;
+    }
+
     // 1. Demostración de Condición de Carrera (SIN Sincronización)
     public void ejecutarSinSincronizacion(int numHilos, int incrementosPorHilo) {
         this.contadorCompartido = 0;
