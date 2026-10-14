@@ -17,7 +17,7 @@
    java Main
 
    ## Integrantes
-   - Arnoldo Esteban Morales Salvador 2190-24-11268
+    Arnoldo Esteban Morales Salvador 2190-24-11268
    - Santiago Elsias Jax Soc 2130-24-23883
    - Cristian Ronaldo Navarro Garcia 2190-24-23371
    - Rony Milton Yanes Ruiz 2190-24-1980
