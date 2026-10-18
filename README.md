@@ -27,4 +27,6 @@ El informe técnico está en la carpeta `docs`.
 - Cristian Ronaldo Navarro Garcia - 2190-24-23371
 - Rony Milton Yanes Ruiz - 2190-24-1980
 - Domenick Emmanuel Montepeque Cifuentes - 2190-24-5736
-   
+
+## Videos de los integrantes 
+   https://drive.google.com/drive/folders/1Cj7RM1-3p9wLxjnmcUztBA8LZZR3aBmC?usp=sharing
